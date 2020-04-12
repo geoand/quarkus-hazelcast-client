@@ -1,0 +1,84 @@
+name: "Quarkus master CI"
+on:
+  watch:
+    types: [started]
+
+# For this CI to work, ECOSYSTEM_CI_TOKEN needs to contain a GitHub token with 'repo' rights, while 'ECOSYSTEM_CI_REPO_PATH' needs
+# to be set to the corresponding path in the ecosystem-ci repository
+
+env:
+  # TODO: fix
+  ECOSYSTEM_CI_REPO: geoand/ecoystem-ci
+  ECOSYSTEM_CI_REPO_FILE: context.yaml
+  JAVA_VERSION: 11
+
+  #########################
+  # Repo specific setting #
+  #########################
+
+  ECOSYSTEM_CI_REPO_PATH: hazelcast-client
+
+jobs:
+  build:
+    name: "Build against Quarkus from master"
+    runs-on: ubuntu-latest
+    # TODO: update this actor
+    if: github.actor == 'geoand'
+
+    steps:
+      - name: Install yq
+        run: sudo add-apt-repository ppa:rmescandon/yq && sudo apt update && sudo apt install yq -y
+
+      - name: Set up Java
+        uses: actions/setup-java@v1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        with:
+          path: current-repo
+          ref: master
+
+      - name: Checkout Ecosystem
+        uses: actions/checkout@v2
+        with:
+          repository: ${{ env.ECOSYSTEM_CI_REPO }}
+          ref: master
+          path: ecosystem-ci
+
+      - name: Setup and Run Tests
+        run: |
+          cd ecosystem-ci/${ECOSYSTEM_CI_REPO_PATH}
+          ISSUE_NUM=$(yq r ${ECOSYSTEM_CI_REPO_FILE} issues.latestCommit)
+          ISSUE_REPO=$(yq r ${ECOSYSTEM_CI_REPO_FILE} issues.repo)
+          QUARKUS_VERSION=$(yq r ${ECOSYSTEM_CI_REPO_FILE} quarkus.version)
+          cd - > /dev/null
+
+          # perform actual test run
+          cd current-repo
+          if QUARKUS_VERSION=${QUARKUS_VERSION} .github/test ; then
+            echo "Tests succeded"
+            TEST_STATUS="success"
+          else
+            echo "Tests failed"
+            TEST_STATUS="failure"
+          fi
+
+          echo "Attempting to report results"
+
+          sudo apt-get update -o Dir::Etc::sourcelist="sources.list" \
+            -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+          sudo apt-get install -y gnupg2 gnupg-agent
+          echo "Installing SDKMAN"
+          curl -s "https://get.sdkman.io" | bash
+          source ~/.sdkman/bin/sdkman-init.sh
+          sdk install jbang 0.21.0
+
+          jbang .github/report.java "${{ secrets.ECOSYSTEM_CI_TOKEN }}" "${TEST_STATUS}" "${ISSUE_REPO}" "${ISSUE_NUM}" "${GITHUB_REPOSITORY}"
+
+          echo "Report completed"
+
+          if [[ ${TEST_STATUS} != "success" ]]; then
+            exit 1
+          fi
